@@ -47,6 +47,7 @@
 
 #define MAGIC 0x4444 // a magic number to write to/read from EEPROM so we know 
                      // that it's populated and not random data
+#define MAX_LONG 2147483647L
 
 struct DataPoint {
   int pos;
@@ -212,6 +213,12 @@ void loop() {
   if (calibration) {
     calibrate();
   }
+
+  //to avoid errors, do nothing if there aren't at least 2 data points
+  if (calibPoints < 2) {
+    delay(1000);
+    return;
+  }
   
   long freq = readFreq();
   
@@ -220,22 +227,21 @@ void loop() {
     delay(500);
     return;
   }
-  
-  if (freq >= 7000000l && freq <= 7200000l) {
-    // base pos = 3180
-    // band steps = 3610 - 3180 = 430
-    double a = 430;
-    double proportional = (double)(freq - 7000000) / 200000.0;
-    double relative = a * proportional;
 
-    //new position
-    int pos = 3180 + (int)relative;
-    moveTo(pos);
+  //find 2 datapoints that the frequency is in between
+  DataPoint foundLower = findLowerDataPoint(freq);
+  DataPoint foundHigher = findHigherDataPoint(freq);
+
+  //check that both DPs have been found - 0 is not found
+  if (foundLower.pos > 0 && foundHigher.pos > 0) {
+    int dpBandwidth = foundHigher.freq - foundLower.freq;
+    int steps = foundHigher.pos - foundLower.pos;
+    double proportional = (double)dpBandwidth/steps;
+    int newPos = (freq-foundLower.pos)/proportional;
+
+    //TODO: correct for mechanical play
+    moveTo(newPos);
   }
-  //7000000 .. 3180
-  //7200000 .. 3610
-
-  lastFreq = freq;
 
   //not sure how fast can we poll CAT
   delay(500);
@@ -314,10 +320,35 @@ long readFreq() {
   return freq;
 }
 
-int getBand(unsigned long freq) {
-  if (freq > 6500000 && freq < 7500000) {
-    return 40;
-  } else if (freq > 1300000 && freq < 15000000) { 
-    return 20;
+DataPoint findLowerDataPoint(long freq) {
+  DataPoint foundDp;
+  foundDp.pos = 0;
+  for (int i = 0; i < calibPoints; i++) {
+    DataPoint dp = calib[i];
+    if (dp.freq <= freq && 
+        //check that it's not more then 500khz off - sanity check
+        (dp.freq + 5000000L > freq) && 
+        dp.pos > foundDp.pos) {
+          foundDp = dp;
+        }
   }
+  return foundDp;
+}
+
+DataPoint findHigherDataPoint(long freq) {
+  DataPoint foundDp;
+  foundDp.pos = MAX_LONG;
+  for (int i = 0; i < calibPoints; i++) {
+    DataPoint dp = calib[i];
+    if (dp.freq >= freq && 
+        //check that it's not more then 500khz off - sanity check
+        (dp.freq - 5000000L < freq) && 
+        dp.pos < foundDp.pos) {
+          foundDp = dp;
+        }
+  }
+
+  //check if any dp has been found, if not, reset it's pos to 0
+  if (foundDp.pos == MAX_LONG) foundDp.pos = 0;
+  return foundDp;
 }
