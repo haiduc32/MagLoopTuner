@@ -47,7 +47,7 @@
 
 #define MAGIC 0x4444 // a magic number to write to/read from EEPROM so we know 
                      // that it's populated and not random data
-#define MAX_LONG 2147483647L
+#define MAX_INT 32767
 
 struct DataPoint {
   int pos;
@@ -72,17 +72,31 @@ int calibPoints = 0;
 DataPoint *calib;
 
 void setup() {
+  Serial.begin(38400);         // Init serial port and set baudrate
+  while(!Serial);               // Wait for serial port to connect
+  Serial.println("\nStart...");
+
+  
   pinMode(BTN, INPUT_PULLUP);
   delay(1);
   bool btnState = digitalRead(BTN);
   if (btnState == LOW) {
     calibration = true;
+
+    //wait for the button to be depressed
+    while (!digitalRead(BTN));
+    
   } else {
     //load all calibration data points
+
+    Serial.println("loading all data points");
+    
     int magic;
     EEPROM.get(0, magic);
     if (magic == MAGIC) {
+      Serial.println("found magic");
       EEPROM.get(2, calibPoints);
+      Serial.println(calibPoints);
       calib = malloc(sizeof(DataPoint)*calibPoints);
       for (int i = 0; i < calibPoints; i++) {
         EEPROM.get(4+sizeof(DataPoint)*i, calib[i]);
@@ -93,9 +107,7 @@ void setup() {
   delay(1000);
   stepper.setEnablePin(EN_PIN);
   SPI.begin();
-  Serial.begin(38400);         // Init serial port and set baudrate
-  while(!Serial);               // Wait for serial port to connect
-  Serial.println("\nStart...");
+
 
   if (calibration) Serial.println("Calibration mode");
 
@@ -204,8 +216,6 @@ void home() {
 
   stepper.setCurrentPosition(0);
   stepper.disableOutputs();
-
-  calibration = true;
 }
 
 long lastFreq = 0;
@@ -227,17 +237,22 @@ void loop() {
     delay(500);
     return;
   }
-
+  lastFreq = freq;
+  
   //find 2 datapoints that the frequency is in between
   DataPoint foundLower = findLowerDataPoint(freq);
   DataPoint foundHigher = findHigherDataPoint(freq);
 
+  Serial.print(foundLower.pos);Serial.print(" ");Serial.println(foundHigher.pos);
+
   //check that both DPs have been found - 0 is not found
   if (foundLower.pos > 0 && foundHigher.pos > 0) {
-    int dpBandwidth = foundHigher.freq - foundLower.freq;
+    long dpBandwidth = foundHigher.freq - foundLower.freq;
+    Serial.print("bandwidth: ");Serial.println(dpBandwidth);
     int steps = foundHigher.pos - foundLower.pos;
     double proportional = (double)dpBandwidth/steps;
-    int newPos = (freq-foundLower.pos)/proportional;
+    Serial.print("proportional: ");Serial.println(proportional);
+    int newPos = foundLower.pos + (freq-foundLower.freq)/proportional;
 
     //TODO: correct for mechanical play
     moveTo(newPos);
@@ -248,6 +263,8 @@ void loop() {
 }
 
 void calibrate() {
+  Serial.println("entered calibration");
+  
   int dp = 0;
   DataPoint dataPoints[MAX_DATA_POINTS_PER_BAND];
 
@@ -259,27 +276,29 @@ void calibrate() {
     //short for next, and long for save data point, longer for save
     bool btn = HIGH;
     do  {
-      delay (100);
+      delay (10);
       btn = digitalRead(BTN);
     } while (btn);
     
     unsigned long pressTime = millis();
     //now wait till the button is depressed (HIGH state)
     do  {
-      delay (100);
+      delay (10);
       btn = digitalRead(BTN);
     } while (!btn);
 
     //saving 4 bytes of ram..
     pressTime = millis() - pressTime;
 
-    if (pressTime < 1000) {
+    if (pressTime < 400) {
       //short press - continue to next position
-    } else if (pressTime < 2000) {
+      Serial.println(pressTime);
+    } else if (pressTime < 3000) {
       // add data point
       Serial.println("Adding data point");
       dataPoints[dp].pos = i;
       dataPoints[dp].freq = readFreq();
+      dp++;
     } else {
       //save band data and reset to 0 position
       //save total number of data points at address 0
@@ -291,6 +310,8 @@ void calibrate() {
 
       //write the calibration points count
       EEPROM.put(0, MAGIC);
+      Serial.print("priting calibPoints: ");
+      Serial.println(calibPoints);
       EEPROM.put(2, calibPoints);
 
       //finally, time to reset to position 0
@@ -327,7 +348,7 @@ DataPoint findLowerDataPoint(long freq) {
     DataPoint dp = calib[i];
     if (dp.freq <= freq && 
         //check that it's not more then 500khz off - sanity check
-        (dp.freq + 5000000L > freq) && 
+        (dp.freq + 500000L > freq) && 
         dp.pos > foundDp.pos) {
           foundDp = dp;
         }
@@ -337,18 +358,18 @@ DataPoint findLowerDataPoint(long freq) {
 
 DataPoint findHigherDataPoint(long freq) {
   DataPoint foundDp;
-  foundDp.pos = MAX_LONG;
+  foundDp.pos = MAX_INT;
   for (int i = 0; i < calibPoints; i++) {
     DataPoint dp = calib[i];
-    if (dp.freq >= freq && 
+    if ((dp.freq > freq) && 
         //check that it's not more then 500khz off - sanity check
-        (dp.freq - 5000000L < freq) && 
-        dp.pos < foundDp.pos) {
+        ((dp.freq - 500000L) < freq) && 
+        (dp.pos < foundDp.pos)) {
           foundDp = dp;
         }
   }
 
   //check if any dp has been found, if not, reset it's pos to 0
-  if (foundDp.pos == MAX_LONG) foundDp.pos = 0;
+  if (foundDp.pos == MAX_INT) foundDp.pos = 0;
   return foundDp;
 }
