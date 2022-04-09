@@ -3,7 +3,8 @@
  * Also very much googling and figuring stufff out.
  * 
  * This is configured for Elecraft radios. 
- * It might be enough just to change the Serial speed to accomodate other radios.
+ * It might be enough just to change the Serial speed to accomodate other radios. 
+ * If it's not working, you'll have to dig into your radio setup and update the code.
  * 
  * Its configured to home turning counter clock wise. If it's not turning CCW on start, switch stepper cable.
  * 
@@ -19,6 +20,10 @@
  * Compiled in Arduino IDE
  */
 
+// ADJUST:
+ #define STALL_VALUE      15 // [-64..63] - lower for higher sensitivity, higher for lower sensitivity
+
+// The rest leave as is, tested on Elecraft KX2
 #include <TMCStepper.h>
 #include <AccelStepper.h>
 #include <SoftwareSerial.h>
@@ -37,7 +42,6 @@
 #define MAX_SPEED        40 // In timer value
 #define MIN_SPEED      1000
 
-#define STALL_VALUE      18 // [-64..63]
 #define R_SENSE 0.11f // R Sense resistor value - can be measured on board (the biggest ones)
                       // Match to your driver
                       // SilentStepStick series use 0.11
@@ -94,13 +98,18 @@ void setup() {
     int magic;
     EEPROM.get(0, magic);
     if (magic == MAGIC) {
-      Serial.println("found magic");
       EEPROM.get(2, calibPoints);
+      
+      Serial.print("Found magic, reading calibration points: ");
       Serial.println(calibPoints);
+      
       calib = malloc(sizeof(DataPoint)*calibPoints);
       for (int i = 0; i < calibPoints; i++) {
         EEPROM.get(4+sizeof(DataPoint)*i, calib[i]);
+        //print to serial:
+        Serial.print(calib[i].freq, DEC);Serial.print(':');Serial.print(calib[i].pos);Serial.print(';');
       }
+      Serial.println();
     }
   }
   
@@ -120,6 +129,7 @@ void setup() {
   pinMode(MISO, INPUT_PULLUP);
   digitalWrite(EN_PIN, LOW);
 
+  Serial.println("Starting TMC2130");
   driver.begin();
   driver.toff(4);
   driver.blank_time(24);
@@ -156,9 +166,16 @@ void setup() {
 
 //find home position
 void home() {
+  Serial.println("homing..");
+  //move it just a little to try to elimineate false stall guard signals
+  stepper.moveTo(-16);
+  stepper.runToPosition();
+  delay(10);
+  
   bool foundLimit = false;
   
   stepper.enableOutputs();
+  delay(100);
   int steps = 0;
   stepper.moveTo(-200*16*4);
   while (stepper.isRunning() ) {
@@ -184,35 +201,12 @@ void home() {
     if (!foundLimit && (stepper.currentPosition() < 500) && driver.stallguard()) {
       foundLimit = true;
       stepper.stop();
-//      Serial.print(steps, DEC);
-//      Serial.print(" stall ");
+      Serial.print(steps, DEC);
+      Serial.print(" stall ");
 //      Serial.println(stepper.targetPosition(), DEC);
     }
   }
   stepper.disableOutputs();
-
-//  // a desperate attempt to get the homing right
-//  // seems to help to get repetitive results
-//  delay(10);
-//  stepper.enableOutputs();
-//  stepper.setCurrentPosition(0);
-//  stepper.moveTo(-32);
-//  stepper.runToPosition();
-//  delay(200);
-//
-//  delay(10);
-//  stepper.enableOutputs();
-//  stepper.setCurrentPosition(0);
-//  stepper.moveTo(-32);
-//  stepper.runToPosition();
-//  delay(200);
-//
-//  delay(10);
-//  stepper.enableOutputs();
-//  stepper.setCurrentPosition(0);
-//  stepper.moveTo(-32);
-//  stepper.runToPosition();
-//  delay(200);
 
   stepper.setCurrentPosition(0);
   stepper.disableOutputs();
@@ -293,9 +287,10 @@ void calibrate() {
     if (pressTime < 400) {
       //short press - continue to next position
       Serial.println(pressTime);
+      
     } else if (pressTime < 3000) {
       // add data point
-      Serial.println("Adding data point");
+      Serial.println("Adding data point");  
       dataPoints[dp].pos = i;
       dataPoints[dp].freq = readFreq();
       dp++;
@@ -328,6 +323,7 @@ void moveTo(int pos) {
   stepper.runToPosition();
   stepper.disableOutputs();
 }
+
 
 long readFreq() {
   softSerial.print("FA;");
